@@ -197,21 +197,26 @@ class PhraseTracker {
     for(const key of heard){if(!key)continue;this.trail.push(key);if(this.trail.length>12)this.trail.shift();this.pending++;
       const page=this.tokens[Math.min(this.cursor,this.tokens.length-1)]?.page||1;
       const low=this.pageStarts[Math.max(0,page-3)],high=this.pageStarts[Math.min(604,page+1)];
-      const ends=(this.byKey.get(key)||[]).filter(i=>i>=low&&i<high);
+      // Search the entire Quran, regardless of the displayed page.
+      const ends=this.byKey.get(key)||[];
       let chosen=null,ambiguous=false;
       for(let n=Math.min(12,this.trail.length);n>=2;n--){
         const suffix=this.trail.slice(-n),candidates=[];
         for(const last of ends){
-          const start=last-n+1,end=last+1;if(start<low)continue;
+          const start=last-n+1,end=last+1;if(start<0)continue;
           if(!suffix.every((t,j)=>this.tokens[start+j]?.key===t))continue;
           const adjacent=start<=this.cursor&&end>this.cursor;
-          // Moving away from the expected position requires three consecutive words.
-          // A complete, unique two-word ayah is also a usable anchor.
           const shortAyah=n===2&&this.tokens[start].ayahStart===start&&this.tokens[last].ayahEnd===end;
-          if(!adjacent&&n<3&&!shortAyah)continue;
-          candidates.push({start,end,n,adjacent});
+          const nearby=start>=low&&last<high;
+          // Keep every occurrence when checking ambiguity, even if too short to relocate.
+          candidates.push({start,end,n,adjacent,shortAyah,nearby});
         }
-        if(candidates.length===1){chosen=candidates[0];break;}
+        if(candidates.length===1){
+          const candidate=candidates[0];
+          // Distant jumps need four exact normalized words, or a unique complete short ayah.
+          if(candidate.adjacent||candidate.shortAyah||n>=(candidate.nearby?3:4))chosen=candidate;
+          break;
+        }
         if(candidates.length>1){ambiguous=true;break;}
       }
       // A final word may close the Quran, or a page, once the preceding phrase is locked.
@@ -251,7 +256,7 @@ function syncTracking(preview=null){
   }else live=pageState(preview);
   render(live||base);
   const active=preview||tracker,token=GLOBAL_WORDS[Math.min(active.cursor,GLOBAL_WORDS.length-1)];
-  const message=active.status==='uncertain'?'Phrase not confirmed — holding position':active.status==='ambiguous'?'Repeated phrase — listening for more words':active.status==='rewound'?'Following your rereading':`Following ${token.surah}:${token.ayah}`;
+  const message=active.status==='uncertain'?'Searching the Quran — keep reciting':active.status==='ambiguous'?'Repeated phrase — listening for more words':active.status==='rewound'?'Following your rereading':`Following ${token.surah}:${token.ayah}`;
   $('follow-status').textContent=message;$('follow-status').hidden=!listening;
   if(!preview&&tracker.cursor>=GLOBAL_WORDS.length&&listening)stop('Reading complete. You can select an ayah to practise again.');
 }
