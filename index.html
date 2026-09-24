@@ -147,8 +147,12 @@ Uthmani font: Quran.com public/fonts/quran/hafs/uthmanic_hafs/UthmanicHafs1Ver18
     <div class="diag-row"><span>Position (committed)</span><b id="d-pos">—</b></div>
     <div class="diag-row"><span>Position (live preview)</span><b id="d-prev">—</b></div>
     <div class="diag-row"><span>Worker</span><b id="d-worker">not started</b></div>
-    <div class="diag-label">Raw recognised text (newest first)</div>
+    <div class="diag-label">Position after each final result</div>
+    <div class="diag-log" id="d-path" style="direction:ltr;text-align:left">—</div>
+    <div class="diag-label">Final results, in order (never evicted)</div>
     <div class="diag-log" id="d-log">Nothing heard yet.</div>
+    <div class="diag-label">Latest interim hypotheses</div>
+    <div class="diag-log" id="d-int">—</div>
     <div class="diag-label">Normalised tokens</div>
     <div class="diag-log" id="d-tokens">—</div>
     <button id="diag-copy" type="button">Copy diagnostics</button>
@@ -486,7 +490,7 @@ function syncTracking(preview=null){
 
 
 // ---- diagnostics: distinguish dictation failure from matching failure ----
-const diag={on:false,lines:[],results:0,engine:'',state:'idle',worker:'not started'};
+const diag={on:false,finals:[],interims:[],path:[],results:0,engine:'',state:'idle',worker:'not started'};
 function diagOn(){try{return localStorage.getItem('tilawa.diag')==='1';}catch(e){return false;}}
 function diagShow(on){
   diag.on=on;$('diag').hidden=!on;
@@ -495,9 +499,21 @@ function diagShow(on){
 }
 function diagLog(kind,text){
   if(!text)return;
-  diag.lines.unshift(kind+' '+text);
-  if(diag.lines.length>40)diag.lines.pop();
+  if(kind==='[final]'||kind==='[error]'){
+    diag.finals.push(kind+' '+text);
+    if(diag.finals.length>60)diag.finals.shift();
+  }else{
+    diag.interims.unshift(text);
+    if(diag.interims.length>8)diag.interims.pop();
+  }
   diagPaint();
+}
+// Record where each final result left the cursor, so the whole session is visible.
+function diagTrace(){
+  const t=GLOBAL_WORDS[Math.min(tracker.cursor,GLOBAL_WORDS.length-1)];
+  if(!t)return;
+  const at=t.surah+':'+t.ayah;
+  if(diag.path[diag.path.length-1]!==at){diag.path.push(at);if(diag.path.length>80)diag.path.shift();}
 }
 function diagPaint(){
   if(!diag.on)return;
@@ -511,14 +527,17 @@ function diagPaint(){
   $('d-interim').textContent=previewFed;
   const pv=preview?GLOBAL_WORDS[Math.min(preview.cursor,GLOBAL_WORDS.length-1)]:null;
   $('d-prev').textContent=pv?pv.surah+':'+pv.ayah+' (page '+pv.page+', '+preview.status+')':'—';
-  $('d-log').textContent=diag.lines.length?diag.lines.join('\n'):'Nothing heard yet.';
+  $('d-log').textContent=diag.finals.length?diag.finals.join('\n\n'):'Nothing heard yet.';
+  $('d-int').textContent=diag.interims.length?diag.interims.join('\n'):'—';
+  $('d-path').textContent=diag.path.length?diag.path.join('  →  '):'—';
   $('d-tokens').textContent=tracker.trail.length?tracker.trail.join(' · '):'—';
 }
 $('diag-close').onclick=()=>diagShow(false);
 $('diag-copy').onclick=()=>{
   const text=['engine: '+diag.engine,'state: '+diag.state,'results: '+diag.results,
-    'tracker: '+tracker.status,'cursor: '+tracker.cursor,'worker: '+diag.worker,
-    'tokens: '+tracker.trail.join(' '),'','raw:',...diag.lines].join('\n');
+    'tracker: '+tracker.status,'committed: '+$('d-pos').textContent,
+    'live preview: '+$('d-prev').textContent,'interim words: '+previewFed,
+    'worker: '+diag.worker,'tokens: '+tracker.trail.join(' '),'','path: '+diag.path.join(' > '),'','finals:',...diag.finals,'','latest interim: '+(diag.interims[0]||'')].join('\n');
   if(navigator.clipboard)navigator.clipboard.writeText(text).then(()=>{$('diag-copy').textContent='Copied';setTimeout(()=>{$('diag-copy').textContent='Copy diagnostics';},1500);});
 };
 // Tap the page counter five times to reveal.
@@ -658,7 +677,7 @@ function start(){
   if(tracker.cursor>=GLOBAL_WORDS.length){$('note').textContent='Reading complete. Select an ayah to practise again.';return;}
   if(!micReady&&navigator.mediaDevices&&navigator.mediaDevices.getUserMedia){checkMicrophone();return;}
   if(words[base.p]&&words[base.p].page!==leafIndex)showLeaf(words[base.p].page,true);
-  starting=true;finalText='';live=null;tracker.trail=[];tracker.pending=0;consumedResults=new Set();seenResults=new Set();preview=null;previewFed=0;tracker.needApprox=false;tracker.follow=false;bumpEpoch();
+  starting=true;finalText='';live=null;tracker.trail=[];tracker.pending=0;consumedResults=new Set();seenResults=new Set();preview=null;previewFed=0;diag.path=[];diag.finals=[];diag.interims=[];diag.results=0;diagTrace();tracker.needApprox=false;tracker.follow=false;bumpEpoch();
   $('note').textContent='Starting speech recognition… Tap again to cancel.';
   $('rec').setAttribute('aria-label','Cancel starting recognition');
   let session;
@@ -679,7 +698,7 @@ function start(){
         if(result.isFinal){consumedResults.add(i);newFinal=true;diag.results++;diagLog('[final]',result[0].transcript);tracker.push(tokens);}
         else{interim.push(...tokens);if(diag.on)diagLog('[interim]',result[0].transcript);}
       }
-      if(newFinal){preview=null;previewFed=0;}
+      if(newFinal){preview=null;previewFed=0;diagTrace();}
       syncTracking();
       queueFuzzy();
       // Safari can hold a whole recitation in ONE growing interim result.
