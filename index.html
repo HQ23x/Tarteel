@@ -143,6 +143,7 @@ Uthmani font: Quran.com public/fonts/quran/hafs/uthmanic_hafs/UthmanicHafs1Ver18
     <div class="diag-row"><span>Session</span><b id="d-state">idle</b></div>
     <div class="diag-row"><span>Results seen</span><b id="d-count">0</b></div>
     <div class="diag-row"><span>Interim words held</span><b id="d-interim">0</b></div>
+    <div class="diag-row"><span>Last result set</span><b id="d-shape">—</b></div>
     <div class="diag-row"><span>Tracker</span><b id="d-status">ready</b></div>
     <div class="diag-row"><span>Position (committed)</span><b id="d-pos">—</b></div>
     <div class="diag-row"><span>Position (live preview)</span><b id="d-prev">—</b></div>
@@ -525,6 +526,7 @@ function diagPaint(){
   $('d-pos').textContent=token?token.surah+':'+token.ayah+' (page '+token.page+', word '+tracker.cursor+')':'—';
   $('d-worker').textContent=diag.worker;
   $('d-interim').textContent=previewFed;
+  $('d-shape').textContent=diag.shape||'—';
   const pv=preview?GLOBAL_WORDS[Math.min(preview.cursor,GLOBAL_WORDS.length-1)]:null;
   $('d-prev').textContent=pv?pv.surah+':'+pv.ayah+' (page '+pv.page+', '+preview.status+')':'—';
   $('d-log').textContent=diag.finals.length?diag.finals.join('\n\n'):'Nothing heard yet.';
@@ -536,7 +538,7 @@ $('diag-close').onclick=()=>diagShow(false);
 $('diag-copy').onclick=()=>{
   const text=['engine: '+diag.engine,'state: '+diag.state,'results: '+diag.results,
     'tracker: '+tracker.status,'committed: '+$('d-pos').textContent,
-    'live preview: '+$('d-prev').textContent,'interim words: '+previewFed,
+    'live preview: '+$('d-prev').textContent,'interim words: '+previewFed,'last result set: '+(diag.shape||'—'),
     'worker: '+diag.worker,'tokens: '+tracker.trail.join(' '),'','path: '+diag.path.join(' > '),'','finals:',...diag.finals,'','latest interim: '+(diag.interims[0]||'')].join('\n');
   if(navigator.clipboard)navigator.clipboard.writeText(text).then(()=>{$('diag-copy').textContent='Copied';setTimeout(()=>{$('diag-copy').textContent='Copy diagnostics';},1500);});
 };
@@ -693,10 +695,24 @@ function start(){
       if(rec!==session)return;
       let interim=[],newFinal=false;
       for(let i=0;i<e.results.length;i++){
-        seenResults.add(i);if(consumedResults.has(i))continue;
+        seenResults.add(i);
         const result=e.results[i],tokens=norm(result[0].transcript).split(/\s+/).filter(Boolean);
-        if(result.isFinal){consumedResults.add(i);newFinal=true;diag.results++;diagLog('[final]',result[0].transcript);tracker.push(tokens);}
-        else{interim.push(...tokens);if(diag.on)diagLog('[interim]',result[0].transcript);}
+        if(result.isFinal){
+          // Only finals are gated by index: they must never be committed twice.
+          if(consumedResults.has(i))continue;
+          consumedResults.add(i);newFinal=true;diag.results++;
+          diagLog('[final]','#'+i+' '+result[0].transcript);tracker.push(tokens);
+        }else{
+          // Interims are never committed, so they are never gated. Safari can
+          // deliver a new interim at an index whose earlier result was final.
+          interim.push(...tokens);
+          if(diag.on)diagLog('[interim]','#'+i+' '+result[0].transcript);
+        }
+      }
+      if(diag.on){
+        let shape=[];
+        for(let i=0;i<e.results.length;i++)shape.push('#'+i+(e.results[i].isFinal?'F':'i'));
+        diag.shape=shape.join(' ');
       }
       if(newFinal){preview=null;previewFed=0;diagTrace();}
       syncTracking();
