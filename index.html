@@ -144,6 +144,7 @@ Uthmani font: Quran.com public/fonts/quran/hafs/uthmanic_hafs/UthmanicHafs1Ver18
     <div class="diag-row"><span>Results seen</span><b id="d-count">0</b></div>
     <div class="diag-row"><span>Interim words held</span><b id="d-interim">0</b></div>
     <div class="diag-row"><span>Last result set</span><b id="d-shape">—</b></div>
+    <div class="diag-row"><span>Interim events</span><b id="d-ievents">0</b></div>
     <div class="diag-row"><span>Tracker</span><b id="d-status">ready</b></div>
     <div class="diag-row"><span>Position (committed)</span><b id="d-pos">—</b></div>
     <div class="diag-row"><span>Position (live preview)</span><b id="d-prev">—</b></div>
@@ -479,7 +480,15 @@ function syncTracking(preview=null){
     const token=GLOBAL_WORDS[Math.min(tracker.cursor,GLOBAL_WORDS.length-1)];
     if(token&&token.page!==currentPage){loadPage(token.page,true);window.scrollTo(0,0);}
     base=pageState(tracker);live=null;
-  }else live=pageState(preview);
+  }else{
+    // A confident preview may also turn the page; otherwise interim progress
+    // onto the next page would be invisible until a final result arrives.
+    const pt=GLOBAL_WORDS[Math.min(preview.cursor,GLOBAL_WORDS.length-1)];
+    if(pt&&pt.page!==currentPage&&(preview.status==='following'||preview.status==='located')){
+      loadPage(pt.page,true);window.scrollTo(0,0);
+    }
+    live=pageState(preview);
+  }
   render(live||base);
   const active=preview||tracker,token=GLOBAL_WORDS[Math.min(active.cursor,GLOBAL_WORDS.length-1)];
   const message=active.status==='located'?'Passage located — confirming words':active.status==='uncertain'?'Searching the Quran — keep reciting':active.status==='ambiguous'?'Repeated phrase — listening for more words':active.status==='rewound'?'Following your rereading':`Following ${token.surah}:${token.ayah}`;
@@ -527,6 +536,7 @@ function diagPaint(){
   $('d-worker').textContent=diag.worker;
   $('d-interim').textContent=previewFed;
   $('d-shape').textContent=diag.shape||'—';
+  $('d-ievents').textContent=diag.interimEvents||0;
   const pv=preview?GLOBAL_WORDS[Math.min(preview.cursor,GLOBAL_WORDS.length-1)]:null;
   $('d-prev').textContent=pv?pv.surah+':'+pv.ayah+' (page '+pv.page+', '+preview.status+')':'—';
   $('d-log').textContent=diag.finals.length?diag.finals.join('\n\n'):'Nothing heard yet.';
@@ -538,7 +548,7 @@ $('diag-close').onclick=()=>diagShow(false);
 $('diag-copy').onclick=()=>{
   const text=['engine: '+diag.engine,'state: '+diag.state,'results: '+diag.results,
     'tracker: '+tracker.status,'committed: '+$('d-pos').textContent,
-    'live preview: '+$('d-prev').textContent,'interim words: '+previewFed,'last result set: '+(diag.shape||'—'),
+    'live preview: '+$('d-prev').textContent,'interim words: '+previewFed,'last result set: '+(diag.shape||'—'),'interim events: '+(diag.interimEvents||0),
     'worker: '+diag.worker,'tokens: '+tracker.trail.join(' '),'','path: '+diag.path.join(' > '),'','finals:',...diag.finals,'','latest interim: '+(diag.interims[0]||'')].join('\n');
   if(navigator.clipboard)navigator.clipboard.writeText(text).then(()=>{$('diag-copy').textContent='Copied';setTimeout(()=>{$('diag-copy').textContent='Copy diagnostics';},1500);});
 };
@@ -613,10 +623,14 @@ let swipeStart=null;
 $('mushaf').addEventListener('touchstart',e=>{if(e.touches.length===1)swipeStart={x:e.touches[0].clientX,y:e.touches[0].clientY};else swipeStart=null;},{passive:true});
 $('mushaf').addEventListener('touchend',e=>{if(!swipeStart||!e.changedTouches.length)return;const dx=e.changedTouches[0].clientX-swipeStart.x,dy=e.changedTouches[0].clientY-swipeStart.y;swipeStart=null;if(Math.abs(dx)>65&&Math.abs(dx)>Math.abs(dy)*1.6)turnLeaf(dx>0?1:-1);},{passive:true});
 
+let lastRendered=0;
 function render(s){
   let miss=0,chk=0;
   // last confirmed index for "recent" colouring
   let lastOk=-1;for(let i=s.p-1;i>=0;i--){if(s.st[i]===1){lastOk=i;break;}}
+  // Dictation arrives in bursts, so several words can be confirmed at once.
+  // Stagger their transition so the highlight sweeps forward instead of jumping.
+  const jumped=s.p-lastRendered,sweep=jumped>1&&jumped<=40;
   words.forEach((w,i)=>{
     const st=s.st[i];let c='w';
     if(i===s.p)c+=' cur';
@@ -624,8 +638,11 @@ function render(s){
     else if(st===2){c+=' miss';miss++;}
     else if(st===3){c+=' check';chk++;}
     else if(i>s.p&&i<s.p+3)c+=' next';
+    if(sweep&&i>=lastRendered&&i<=s.p)w.el.style.transitionDelay=((i-lastRendered)*28)+'ms';
+    else if(w.el.style.transitionDelay)w.el.style.transitionDelay='';
     w.el.className=c;
   });
+  lastRendered=s.p;
   const cur=words[Math.min(s.p,words.length-1)];
   $('t2').textContent=`Page ${currentPage} of 604 · ${Math.round(100*s.p/words.length)}%`;
   const n=miss+chk;$('badge').textContent=n;$('badge').style.display=n?'grid':'none';
@@ -679,7 +696,7 @@ function start(){
   if(tracker.cursor>=GLOBAL_WORDS.length){$('note').textContent='Reading complete. Select an ayah to practise again.';return;}
   if(!micReady&&navigator.mediaDevices&&navigator.mediaDevices.getUserMedia){checkMicrophone();return;}
   if(words[base.p]&&words[base.p].page!==leafIndex)showLeaf(words[base.p].page,true);
-  starting=true;finalText='';live=null;tracker.trail=[];tracker.pending=0;consumedResults=new Set();seenResults=new Set();preview=null;previewFed=0;diag.path=[];diag.finals=[];diag.interims=[];diag.results=0;diagTrace();tracker.needApprox=false;tracker.follow=false;bumpEpoch();
+  starting=true;finalText='';live=null;tracker.trail=[];tracker.pending=0;consumedResults=new Set();seenResults=new Set();preview=null;previewFed=0;diag.path=[];diag.finals=[];diag.interims=[];diag.results=0;diag.interimEvents=0;diagTrace();tracker.needApprox=false;tracker.follow=false;bumpEpoch();
   $('note').textContent='Starting speech recognition… Tap again to cancel.';
   $('rec').setAttribute('aria-label','Cancel starting recognition');
   let session;
@@ -706,6 +723,7 @@ function start(){
           // Interims are never committed, so they are never gated. Safari can
           // deliver a new interim at an index whose earlier result was final.
           interim.push(...tokens);
+          diag.interimEvents=(diag.interimEvents||0)+1;
           if(diag.on)diagLog('[interim]','#'+i+' '+result[0].transcript);
         }
       }
