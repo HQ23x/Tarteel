@@ -68,6 +68,17 @@ body.tools-open .note{display:block;position:fixed;bottom:calc(238px + env(safe-
 .q,.opening .q{line-height:2;-webkit-text-stroke:.06px currentColor}
 
 .follow-status{position:fixed;bottom:calc(38px + env(safe-area-inset-bottom));left:50%;transform:translateX(-50%);z-index:3;border:1px solid var(--rule);background:var(--page);color:var(--ink);padding:5px 10px;border-radius:12px;font:11px system-ui,sans-serif;direction:ltr;max-width:90%;text-align:center;pointer-events:none}.follow-status[hidden],.tools-open .follow-status{display:none}
+
+.diag{margin:14px 0 0;padding:12px 14px;border:1px solid var(--rule,#d8d2c4);border-radius:10px;background:rgba(0,0,0,.02);direction:ltr;text-align:left;font-size:13px;line-height:1.5}
+.diag-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.diag-head button,#diag-copy{font:inherit;border:1px solid var(--rule,#d8d2c4);background:none;border-radius:6px;padding:4px 10px;cursor:pointer}
+.diag-row{display:flex;justify-content:space-between;gap:12px;padding:2px 0}
+.diag-row span{opacity:.7}
+.diag-row b{font-weight:600;text-align:right;word-break:break-word}
+.diag-label{margin:10px 0 4px;opacity:.7}
+.diag-log{font-family:ui-monospace,Menlo,monospace;font-size:12px;max-height:150px;overflow:auto;padding:8px;border:1px solid var(--rule,#d8d2c4);border-radius:6px;white-space:pre-wrap;word-break:break-word;direction:rtl;text-align:right}
+#diag-copy{margin-top:10px}
+.diag-note{margin:8px 0 0;opacity:.6;font-size:12px}
 </style>
 <!--
 Page metadata: https://github.com/quran-center/quran-meta
@@ -126,6 +137,21 @@ Uthmani font: Quran.com public/fonts/quran/hafs/uthmanic_hafs/UthmanicHafs1Ver18
     <button id="next-page" aria-label="Next reading page"><span>التالية</span><svg viewBox="0 0 24 24"><path d="m15 5-7 7 7 7"/></svg></button>
   </nav>
   <p class="note" id="note" role="status" aria-live="polite"></p>
+  <section class="diag" id="diag" hidden>
+    <div class="diag-head"><strong>Diagnostics</strong><button id="diag-close" type="button">Hide</button></div>
+    <div class="diag-row"><span>Engine</span><b id="d-engine">—</b></div>
+    <div class="diag-row"><span>Session</span><b id="d-state">idle</b></div>
+    <div class="diag-row"><span>Results seen</span><b id="d-count">0</b></div>
+    <div class="diag-row"><span>Tracker</span><b id="d-status">ready</b></div>
+    <div class="diag-row"><span>Position</span><b id="d-pos">—</b></div>
+    <div class="diag-row"><span>Worker</span><b id="d-worker">not started</b></div>
+    <div class="diag-label">Raw recognised text (newest first)</div>
+    <div class="diag-log" id="d-log">Nothing heard yet.</div>
+    <div class="diag-label">Normalised tokens</div>
+    <div class="diag-log" id="d-tokens">—</div>
+    <button id="diag-copy" type="button">Copy diagnostics</button>
+    <p class="diag-note">Text only. No audio is recorded, stored or uploaded.</p>
+  </section>
   <footer>Quran text: quran-json (Uthmani) · CC BY-SA 4.0</footer>
 </main>
 
@@ -391,10 +417,10 @@ function ensureWorker(){
   try{
     const src=document.getElementById('fuzzy-worker').textContent;
     fuzzyWorker=new Worker(URL.createObjectURL(new Blob([src],{type:'text/javascript'})));
-    fuzzyWorker.onerror=()=>{fuzzyDead=true;fuzzyWorker=null;fuzzyBusy=false;};
+    fuzzyWorker.onerror=()=>{fuzzyDead=true;fuzzyWorker=null;fuzzyBusy=false;diag.worker='failed';};
     fuzzyWorker.onmessage=e=>{
       const d=e.data;
-      if(d.type==='ready')return;
+      if(d.type==='ready'){diag.worker='ready';diagPaint();return;}
       fuzzyBusy=false;
       // Discard anything overtaken by newer speech, navigation or a new session.
       if(d.epoch===fuzzyEpoch&&d.match&&(tracker.status==='uncertain'||tracker.status==='ambiguous')){
@@ -403,7 +429,7 @@ function ensureWorker(){
       drainFuzzy();
     };
     fuzzyWorker.postMessage({type:'init',keys:GLOBAL_WORDS.map(t=>t.key).join('\u0001')});
-  }catch(error){fuzzyDead=true;fuzzyWorker=null;}
+  }catch(error){fuzzyDead=true;fuzzyWorker=null;diag.worker='unavailable';}
   return fuzzyWorker;
 }
 function drainFuzzy(){
@@ -441,9 +467,53 @@ function syncTracking(preview=null){
   const active=preview||tracker,token=GLOBAL_WORDS[Math.min(active.cursor,GLOBAL_WORDS.length-1)];
   const message=active.status==='located'?'Passage located — confirming words':active.status==='uncertain'?'Searching the Quran — keep reciting':active.status==='ambiguous'?'Repeated phrase — listening for more words':active.status==='rewound'?'Following your rereading':`Following ${token.surah}:${token.ayah}`;
   $('follow-status').textContent=message;$('follow-status').hidden=!listening;
+  if(typeof diag!=='undefined'&&diag.on)diagPaint();
   if(!preview&&tracker.cursor>=GLOBAL_WORDS.length&&listening)stop('Reading complete. You can select an ayah to practise again.');
 }
 
+
+
+// ---- diagnostics: distinguish dictation failure from matching failure ----
+const diag={on:false,lines:[],results:0,engine:'',state:'idle',worker:'not started'};
+function diagOn(){try{return localStorage.getItem('tilawa.diag')==='1';}catch(e){return false;}}
+function diagShow(on){
+  diag.on=on;$('diag').hidden=!on;
+  try{localStorage.setItem('tilawa.diag',on?'1':'0');}catch(e){}
+  if(on)diagPaint();
+}
+function diagLog(kind,text){
+  if(!text)return;
+  diag.lines.unshift(kind+' '+text);
+  if(diag.lines.length>40)diag.lines.pop();
+  diagPaint();
+}
+function diagPaint(){
+  if(!diag.on)return;
+  const token=GLOBAL_WORDS[Math.min(tracker.cursor,GLOBAL_WORDS.length-1)];
+  $('d-engine').textContent=diag.engine;
+  $('d-state').textContent=diag.state;
+  $('d-count').textContent=diag.results;
+  $('d-status').textContent=tracker.status;
+  $('d-pos').textContent=token?token.surah+':'+token.ayah+' (page '+token.page+', word '+tracker.cursor+')':'—';
+  $('d-worker').textContent=diag.worker;
+  $('d-log').textContent=diag.lines.length?diag.lines.join('\n'):'Nothing heard yet.';
+  $('d-tokens').textContent=tracker.trail.length?tracker.trail.join(' · '):'—';
+}
+$('diag-close').onclick=()=>diagShow(false);
+$('diag-copy').onclick=()=>{
+  const text=['engine: '+diag.engine,'state: '+diag.state,'results: '+diag.results,
+    'tracker: '+tracker.status,'cursor: '+tracker.cursor,'worker: '+diag.worker,
+    'tokens: '+tracker.trail.join(' '),'','raw:',...diag.lines].join('\n');
+  if(navigator.clipboard)navigator.clipboard.writeText(text).then(()=>{$('diag-copy').textContent='Copied';setTimeout(()=>{$('diag-copy').textContent='Copy diagnostics';},1500);});
+};
+// Tap the page counter five times to reveal.
+let diagTaps=0,diagTimer=null;
+$('leaf-count').addEventListener('click',()=>{
+  diagTaps++;clearTimeout(diagTimer);diagTimer=setTimeout(()=>{diagTaps=0;},1200);
+  if(diagTaps>=5){diagTaps=0;diagShow(!diag.on);}
+});
+diag.engine=SR?(window.SpeechRecognition?'SpeechRecognition':'webkitSpeechRecognition'):'none available';
+if(diagOn())diagShow(true);
 
 function loadSurah(n){
   const first=ALL_AYAHS.findIndex(v=>v.surah===n);
@@ -584,7 +654,7 @@ function start(){
     session.lang='ar-SA';session.continuous=true;session.interimResults=true;
     session.onstart=()=>{
       if(rec!==session)return;
-      starting=false;listening=true;setRec(true);syncTracking();
+      starting=false;listening=true;setRec(true);diag.state='listening';diagPaint();syncTracking();
       $('note').textContent='Listening. Recite aloud; tap the green button to pause.';
     };
     session.onresult=e=>{
@@ -593,8 +663,8 @@ function start(){
       for(let i=0;i<e.results.length;i++){
         seenResults.add(i);if(consumedResults.has(i))continue;
         const result=e.results[i],tokens=norm(result[0].transcript).split(/\s+/).filter(Boolean);
-        if(result.isFinal){consumedResults.add(i);tracker.push(tokens);}
-        else interim.push(...tokens);
+        if(result.isFinal){consumedResults.add(i);diag.results++;diagLog('[final]',result[0].transcript);tracker.push(tokens);}
+        else{interim.push(...tokens);if(diag.on)diagLog('[interim]',result[0].transcript);}
       }
       syncTracking();
       queueFuzzy();
@@ -603,11 +673,12 @@ function start(){
     };
     session.onend=()=>{
       if(rec!==session)return;
-      rec=null;starting=false;listening=false;finalText='';live=null;setRec(false);render(base);
+      rec=null;starting=false;listening=false;finalText='';live=null;setRec(false);diag.state='ended by browser';diagPaint();render(base);
       $('note').textContent='The browser paused speech recognition. Tap the microphone to resume at your saved position.';toggleTools(true);
     };
     session.onerror=event=>{
       if(rec!==session)return;
+      diag.state='error: '+(event.error||'unknown');diagLog('[error]',(event.error||'')+' '+(event.message||''));
       if(event.error==='not-allowed'||event.error==='audio-capture')micReady=false;
       stop();showError(event.error||'unknown',event.message||'');
     };
