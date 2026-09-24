@@ -142,8 +142,10 @@ Uthmani font: Quran.com public/fonts/quran/hafs/uthmanic_hafs/UthmanicHafs1Ver18
     <div class="diag-row"><span>Engine</span><b id="d-engine">—</b></div>
     <div class="diag-row"><span>Session</span><b id="d-state">idle</b></div>
     <div class="diag-row"><span>Results seen</span><b id="d-count">0</b></div>
+    <div class="diag-row"><span>Interim words held</span><b id="d-interim">0</b></div>
     <div class="diag-row"><span>Tracker</span><b id="d-status">ready</b></div>
-    <div class="diag-row"><span>Position</span><b id="d-pos">—</b></div>
+    <div class="diag-row"><span>Position (committed)</span><b id="d-pos">—</b></div>
+    <div class="diag-row"><span>Position (live preview)</span><b id="d-prev">—</b></div>
     <div class="diag-row"><span>Worker</span><b id="d-worker">not started</b></div>
     <div class="diag-label">Raw recognised text (newest first)</div>
     <div class="diag-log" id="d-log">Nothing heard yet.</div>
@@ -418,6 +420,7 @@ class PhraseTracker {
 
 const tracker=new PhraseTracker(GLOBAL_WORDS,PAGE_WORD_STARTS);
 let consumedResults=new Set(),seenResults=new Set();
+let preview=null,previewFed=0;
 // ---- v7 background approximate location ----
 let fuzzyWorker=null,fuzzyBusy=false,fuzzyQueued=null,fuzzyEpoch=0,fuzzyDead=false;
 function bumpEpoch(){fuzzyEpoch++;fuzzyQueued=null;}
@@ -458,7 +461,7 @@ function queueFuzzy(){
 }
 
 function resetTracking(globalIndex){
-  tracker.reset(globalIndex);live=null;bumpEpoch();
+  tracker.reset(globalIndex);live=null;bumpEpoch();preview=null;previewFed=0;
   // Discard a result already in progress when the user manually changes location.
   seenResults.forEach(i=>consumedResults.add(i));
 }
@@ -505,6 +508,9 @@ function diagPaint(){
   $('d-status').textContent=tracker.status;
   $('d-pos').textContent=token?token.surah+':'+token.ayah+' (page '+token.page+', word '+tracker.cursor+')':'—';
   $('d-worker').textContent=diag.worker;
+  $('d-interim').textContent=previewFed;
+  const pv=preview?GLOBAL_WORDS[Math.min(preview.cursor,GLOBAL_WORDS.length-1)]:null;
+  $('d-prev').textContent=pv?pv.surah+':'+pv.ayah+' (page '+pv.page+', '+preview.status+')':'—';
   $('d-log').textContent=diag.lines.length?diag.lines.join('\n'):'Nothing heard yet.';
   $('d-tokens').textContent=tracker.trail.length?tracker.trail.join(' · '):'—';
 }
@@ -652,7 +658,7 @@ function start(){
   if(tracker.cursor>=GLOBAL_WORDS.length){$('note').textContent='Reading complete. Select an ayah to practise again.';return;}
   if(!micReady&&navigator.mediaDevices&&navigator.mediaDevices.getUserMedia){checkMicrophone();return;}
   if(words[base.p]&&words[base.p].page!==leafIndex)showLeaf(words[base.p].page,true);
-  starting=true;finalText='';live=null;tracker.trail=[];tracker.pending=0;consumedResults=new Set();seenResults=new Set();tracker.needApprox=false;tracker.follow=false;bumpEpoch();
+  starting=true;finalText='';live=null;tracker.trail=[];tracker.pending=0;consumedResults=new Set();seenResults=new Set();preview=null;previewFed=0;tracker.needApprox=false;tracker.follow=false;bumpEpoch();
   $('note').textContent='Starting speech recognition… Tap again to cancel.';
   $('rec').setAttribute('aria-label','Cancel starting recognition');
   let session;
@@ -666,17 +672,27 @@ function start(){
     };
     session.onresult=e=>{
       if(rec!==session)return;
-      let interim=[];
+      let interim=[],newFinal=false;
       for(let i=0;i<e.results.length;i++){
         seenResults.add(i);if(consumedResults.has(i))continue;
         const result=e.results[i],tokens=norm(result[0].transcript).split(/\s+/).filter(Boolean);
-        if(result.isFinal){consumedResults.add(i);diag.results++;diagLog('[final]',result[0].transcript);tracker.push(tokens);}
+        if(result.isFinal){consumedResults.add(i);newFinal=true;diag.results++;diagLog('[final]',result[0].transcript);tracker.push(tokens);}
         else{interim.push(...tokens);if(diag.on)diagLog('[interim]',result[0].transcript);}
       }
+      if(newFinal){preview=null;previewFed=0;}
       syncTracking();
       queueFuzzy();
-      // Interim hypotheses may change. Preview a copy; never double-commit them.
-      if(interim.length&&rec===session)syncTracking(tracker.clone().push(interim));
+      // Safari can hold a whole recitation in ONE growing interim result.
+      // Feed the preview only the words that are new since the last event,
+      // instead of replaying the entire transcript each time.
+      if(interim.length&&rec===session){
+        if(!preview||interim.length<previewFed){preview=tracker.clone();previewFed=0;}
+        if(interim.length>previewFed){
+          preview.push(interim.slice(previewFed));
+          previewFed=interim.length;
+        }
+        syncTracking(preview);
+      }else if(!interim.length){preview=null;previewFed=0;}
     };
     session.onend=()=>{
       if(rec!==session)return;
@@ -694,7 +710,7 @@ function start(){
   }catch(error){stop();showError(error.name||'unknown',error.message||'');}
 }
 function stop(message='Paused. Tap the green button to continue.'){
-  ++micRequest;micChecking=false;tracker.trail=[];tracker.pending=0;tracker.needApprox=false;tracker.follow=false;bumpEpoch();
+  ++micRequest;micChecking=false;tracker.trail=[];tracker.pending=0;preview=null;previewFed=0;tracker.needApprox=false;tracker.follow=false;bumpEpoch();
   const session=rec;rec=null;starting=false;listening=false;finalText='';live=null;
   if(session){try{session.abort();}catch(error){}}
   setRec(false);render(base);$('note').textContent=message;
