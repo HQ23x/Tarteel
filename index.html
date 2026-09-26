@@ -472,8 +472,11 @@ function resetTracking(globalIndex){
   seenResults.forEach(i=>consumedResults.add(i));
 }
 function pageState(state){
-  const first=PAGE_WORD_STARTS[currentPage-1];
-  return {p:Math.max(0,Math.min(words.length,state.cursor-first)),st:words.map(w=>state.marks.get(w.globalIndex)||0)};
+  const first=PAGE_WORD_STARTS[currentPage-1],raw=state.cursor-first;
+  // onPage is false when the cursor sits outside this page: the caller then
+  // keeps the previous highlight rather than rendering no current word at all.
+  return {p:Math.max(0,Math.min(words.length,raw)),onPage:raw>=0&&raw<words.length,
+          st:words.map(w=>state.marks.get(w.globalIndex)||0)};
 }
 function syncTracking(preview=null){
   if(!preview){
@@ -487,7 +490,10 @@ function syncTracking(preview=null){
     if(pt&&pt.page!==currentPage&&(preview.status==='following'||preview.status==='located')){
       loadPage(pt.page,true);window.scrollTo(0,0);
     }
-    live=pageState(preview);
+    const candidate=pageState(preview);
+    // A provisional frame that points off this page would blank the highlight.
+    // Keep what is on screen instead of flickering to nothing.
+    if(candidate.onPage||!live)live=candidate;
   }
   render(live||base);
   const active=preview||tracker,token=GLOBAL_WORDS[Math.min(active.cursor,GLOBAL_WORDS.length-1)];
@@ -733,8 +739,10 @@ function start(){
         diag.shape=shape.join(' ');
       }
       if(newFinal){preview=null;previewFed=0;diagTrace();}
-      syncTracking();
-      queueFuzzy();
+      // Only a final result changes committed state. Re-syncing on every interim
+      // dragged the page back to the last committed position and blanked the
+      // highlight between previews.
+      if(newFinal){syncTracking();queueFuzzy();}
       // Safari can hold a whole recitation in ONE growing interim result.
       // Feed the preview only the words that are new since the last event,
       // instead of replaying the entire transcript each time.
